@@ -3,13 +3,12 @@ import asyncio
 import os
 import signal
 import argparse
+import logging
 from aiohttp import web
 from pathlib import Path
 from functools import partial
 
-IMAGE_DIR = 'test_photos'
 CHUNK_SIZE = 1024 * 1024
-DELAY = 1
 
 
 def make_zip_cmd(path, archive_hash='test', compression_ratio=9):
@@ -19,20 +18,23 @@ def make_zip_cmd(path, archive_hash='test', compression_ratio=9):
 async def archivate(request, image_dir, delay):
 
     archive_hash = request.match_info['archive_hash']
-    full_path = Path.joinpath(Path.cwd(), IMAGE_DIR, archive_hash)
+    full_path = Path.joinpath(Path.cwd(), image_dir, archive_hash)
     if not (Path.exists(full_path) and Path.is_dir(full_path)):
+        error_text = f'Архив {archive_hash} не существует или был удален'
+        logging.debug(error_text)
         raise web.HTTPNotFound(
-            text=f'Архив {archive_hash} не существует или был удален')
+            text=error_text)
 
     zip_cmd = make_zip_cmd(path=str(archive_hash))
     zip_process = await asyncio.create_subprocess_exec(
         *zip_cmd,
-        cwd=IMAGE_DIR,
+        cwd=image_dir,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE)
-
+    logging.debug('Process PID={}'.format(zip_process.pid))
     response = web.StreamResponse()
-    response.headers['Content-Disposition'] = f'attachment; filename="{archive_hash}.zip"'
+    response.headers['Content-Disposition'] = \
+        f'attachment; filename="{archive_hash}.zip"'
     await response.prepare(request)
 
     try:
@@ -40,17 +42,16 @@ async def archivate(request, image_dir, delay):
         while True:
             zip_chunk = await zip_process.stdout.read(CHUNK_SIZE)
             counter += 1
-            # logging.debug(
-            #     'Download chunk {} - delay={}'.format(counter, delay))
+            logging.debug(
+                'Download chunk {} - delay={}'.format(counter, delay))
             await response.write(zip_chunk)
-            await asyncio.sleep(DELAY)
+            await asyncio.sleep(delay)
 
             if not zip_chunk:
                 break
 
     except (ConnectionResetError, asyncio.CancelledError):
-        print('Download was interrupted')
-        # logging.debug('Download was interrupted')
+        logging.debug('Download was interrupted')
         raise
     finally:
         try:
@@ -58,16 +59,16 @@ async def archivate(request, image_dir, delay):
         except OSError:
             pass
         response.force_close()
-        # logging.debug('Download finished')
+        logging.debug('Download finished')
 
     return response
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Async download service')
-    parser.add_argument('--delay', type=int, default=1,
-                        help="set delay in senonds, default=1")
-    parser.add_argument('--image_dir', type=int, default="test_photos",
+    parser.add_argument('--delay', type=int, default=0,
+                        help="set delay in senonds, default=0")
+    parser.add_argument('--image_dir', type=str, default="test_photos",
                         help="get image directory, delault='test_photos'")
     parser.add_argument('--enable_logs', type=bool, default=True,
                         help="enable or disable logging, default=True")
@@ -83,8 +84,10 @@ async def handle_index_page(request):
 
 if __name__ == '__main__':
     image_dir, delay, enable_logs = parse_args()
-    partial_archivate = functools.partial(
+    partial_archivate = partial(
         archivate, image_dir=image_dir, delay=delay)
+    if enable_logs:
+        logging.basicConfig(level=logging.DEBUG)
     app = web.Application()
     app.add_routes([
         web.get('/', handle_index_page),
