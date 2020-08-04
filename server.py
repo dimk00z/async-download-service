@@ -4,9 +4,11 @@ import os
 import signal
 import argparse
 import logging
+from itertools import count
 from aiohttp import web
 from pathlib import Path
 from functools import partial
+from contextlib import suppress
 
 CHUNK_SIZE = 1024 * 1024
 
@@ -38,38 +40,32 @@ async def archivate(request, image_dir, delay):
     await response.prepare(request)
 
     try:
-        counter = 0
-        while True:
+        for chunk_number in count():
             zip_chunk = await zip_process.stdout.read(CHUNK_SIZE)
-            counter += 1
             logging.debug(
-                'Download chunk {} - delay={}'.format(counter, delay))
+                f'Download chunk {chunk_number} - delay={delay}')
             await response.write(zip_chunk)
             await asyncio.sleep(delay)
-
             if not zip_chunk:
                 break
-
+        logging.debug('Download finished')
+        return response
     except (ConnectionResetError, asyncio.CancelledError):
         logging.debug('Download was interrupted')
+        zip_process.terminate()
         raise
     finally:
-        try:
+        with suppress(OSError):
             os.kill(zip_process.pid, signal.SIGKILL)
-        except OSError:
-            pass
         response.force_close()
-        logging.debug('Download finished')
-
-    return response
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Async download service')
-    parser.add_argument('--delay', type=int, default=0,
-                        help="set delay in senonds, default=0")
+    parser.add_argument('--delay', type=int, default=1,
+                        help="set delay as value in seconds, default=0")
     parser.add_argument('--image_dir', type=str, default="test_photos",
-                        help="get image directory, delault='test_photos'")
+                        help="set image directory, default=test_photos")
     parser.add_argument('--enable_logs', type=bool, default=True,
                         help="enable or disable logging, default=True")
     args = parser.parse_args()
